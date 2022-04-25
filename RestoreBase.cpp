@@ -1,0 +1,312 @@
+//---------------------------------------------------------------------------
+
+#include <vcl.h>
+#pragma hdrstop
+
+#include "DataModule.h"
+#include "Main.h"
+#include "RestoreBase.h"
+//---------------------------------------------------------------------------
+#pragma package(smart_init)
+#pragma link "Placemnt"
+#pragma link "IB_Services"
+#pragma link "ToolEdit"
+#pragma link "ZipBuilder"
+#pragma link "RxRichEd"
+#pragma link "JvComponent"
+#pragma link "JvExControls"
+#pragma link "JvNavigationPane"
+#pragma link "JvWaitingGradient"
+#pragma link "JvExStdCtrls"
+#pragma link "JvMemo"
+#pragma link "JvWaitingProgress"
+#pragma link "JvWaitingProgress"
+#pragma link "JvWaitingProgress"
+#pragma link "JvProgressBar"
+#pragma link "JvExComCtrls"
+#pragma link "JvWaitingProgress"
+#pragma resource "*.dfm"
+//TRestoreBaseForm *RestoreBaseForm;
+//---------------------------------------------------------------------------
+__fastcall TRestoreBaseForm::TRestoreBaseForm(TComponent* Owner)
+        : TForm(Owner)
+{
+  FormStorage1->IniFileName=MainForm->WorkDir+"SB_2009.ini";
+  FormStorage1->IniSection="RestoreBaseForm";
+
+  server=SaleBookDM->Server;
+  dbFullName=SaleBookDM->DB_Name;
+
+  Label2->Caption="База данных - "+server+dbFullName;
+  TIniFile *ini = new TIniFile(MainForm->WorkDir+"SB_2009.ini");
+  zipFilenameEdit->Text=ini->ReadString(server+"BackUpBaseForm","ZipFileName","");
+  backupFilenameEdit->Text=ini->ReadString(server+"BackUpBaseForm","BackUpNetDirectory","")+"\\"+ChangeFileExt(SaleBookDM->Base_Name,".gbk");
+  dbNetDirectoryEdit->Text=ini->ReadString(server+"RestoreBaseForm","dbNetDirectory","");
+  dbCopyDirectoryEdit->Text=ini->ReadString(server+"RestoreBaseForm","dbCopyDirectory","");
+  delete ini;
+}
+//---------------------------------------------------------------------------
+void __fastcall TRestoreBaseForm::FormClose(TObject *Sender,
+      TCloseAction &Action)
+{
+  TIniFile *ini = new TIniFile(MainForm->WorkDir+"SB_2009.ini");
+  ini->WriteString(server+"RestoreBaseForm","dbNetDirectory",dbNetDirectoryEdit->Text);
+  ini->WriteString(server+"RestoreBaseForm","dbCopyDirectory",dbCopyDirectoryEdit->Text);
+  delete ini;
+
+  SetCurrentDir(MainForm->WorkDir);
+}
+//---------------------------------------------------------------------------
+void __fastcall TRestoreBaseForm::ExitButtonClick(TObject *Sender)
+{
+  Close();
+}
+//---------------------------------------------------------------------------
+void __fastcall TRestoreBaseForm::RestoreButtonClick(TObject *Sender)
+{
+  //Проверяем наличие подключений к базе данных
+  AnsiString str;
+  TpFIBQuery * TQ=SaleBookDM->TempQuery;
+  TQ->Close();
+  TQ->SQL->Clear();
+  str="select USER_ID from USERS_MONITOR where USER_ID <> "+IntToStr(SaleBookDM->UserID);
+  TQ->SQL->Add(str);
+  try
+  {
+    TQ->ExecQuery();
+  }
+  catch(const Exception &exc)
+  { MessageDlg("Ошибка select USER_ID from USERS_MONITOR where USER_ID <> "+IntToStr(SaleBookDM->UserID)+"\n"+exc.Message,mtError,TMsgDlgButtons() << mbOK,0);
+    TQ->Close();
+    return;
+  }
+  if(TQ->RecordCount > 0)
+  { MessageDlg("Восстановление базы данных возможно только в монопольном режиме.\nВойдите в монитор пользователей и убедитесь, что кроме Вас никто не работет с базой.",mtWarning,TMsgDlgButtons() << mbOK,0);
+    TQ->Close();
+    return;
+  }
+  TQ->Close();
+
+  if(backupFilenameEdit->Text.IsEmpty())
+  { MessageDlg("Не указано имя BackUp файла",mtError,TMsgDlgButtons() << mbOK,0);
+    return;
+  }
+
+  if(dbNetDirectoryEdit->Text.IsEmpty() || !DirectoryExists(dbNetDirectoryEdit->Text))
+  { if(dbNetDirectoryEdit->Text.IsEmpty())
+      MessageDlg("Не указан сетевой путь к базе данных",mtError,TMsgDlgButtons() << mbOK,0);
+    else
+      MessageDlg("Каталог \""+dbNetDirectoryEdit->Text+"\" отсутствует",mtError,TMsgDlgButtons() << mbOK,0);
+    return;
+  }
+
+  if(dbCopyDirectoryEdit->Text.IsEmpty() || !DirectoryExists(dbCopyDirectoryEdit->Text))
+  { if(dbCopyDirectoryEdit->Text.IsEmpty())
+      MessageDlg("Не указана папка для копии базы данных",mtError,TMsgDlgButtons() << mbOK,0);
+    else
+      MessageDlg("Каталог \""+dbCopyDirectoryEdit->Text+"\" отсутствует",mtError,TMsgDlgButtons() << mbOK,0);
+    return;
+  }
+
+  AnsiString backupFileName=backupFilenameEdit->Text;
+
+  RichEdit->Lines->Clear();
+  RichEdit->SetFocus();
+  TColor color=RichEdit->DefAttributes->Color;
+  int size=RichEdit->DefAttributes->Size;
+  RichEdit->SelAttributes->Color=clRed;
+  RichEdit->SelAttributes->Size=10;
+
+  WaitingGradient->Visible=true;
+  WaitingGradient->Active=true;
+
+  //Распаковываем архив
+  if(!zipFilenameEdit->Text.IsEmpty() && FileExists(zipFilenameEdit->Text))
+  {
+    RichEdit->Lines->Add("Извлечение BackUp файла из архива...");
+    RichEdit->Repaint();
+
+    ZipBuilder->ZipFileName=zipFilenameEdit->Text;
+    ZipBuilder->ExtrBaseDir=ExtractFileDir(backupFilenameEdit->Text);
+    ZipBuilder->FSpecArgs->Clear();
+    ZipBuilder->ExtrOptions.Clear();
+    ZipBuilder->ExtrOptions << ExtrOverWrite;
+    ZipBuilder->Extract();
+    if(ZipBuilder->SuccessCnt != 1)
+    { MessageDlg("Ошибка извлечения BackUp файла",mtError,TMsgDlgButtons() << mbOK,0);
+      ProgressBar->Position=0;
+      return;
+    }
+
+    ProgressBar->Position=20;
+
+    RichEdit->SelAttributes->Color=clBlue;
+    RichEdit->SelAttributes->Size=10;
+    RichEdit->Lines->Add("BackUp файл извлечен!");
+    RichEdit->Repaint();
+  }
+
+  if(!FileExists(backupFilenameEdit->Text))
+  { MessageDlg("BackUP файла \""+backupFilenameEdit->Text+"\" отсутствует",mtError,TMsgDlgButtons() << mbOK,0);
+    ProgressBar->Position=0;
+    return;
+  }
+
+  SaleBookDM->DisConnectDataBase();
+
+  ProgressBar->Position=30;
+  ProgressBar->Refresh();
+
+  //Сохраняем старую базу
+  RichEdit->SelAttributes->Color=clRed;
+  RichEdit->SelAttributes->Size=10;
+  RichEdit->Lines->Add("Сохраняем старую базу данных");
+  RichEdit->Repaint();
+
+  AnsiString oldDBFileName, dbFileName;
+  dbFileName=SaleBookDM->DB_Name;
+//  dbFileName=dbNetDirectoryEdit->Text+"\\"+SaleBookDM->Base_Name;
+  unsigned short y,m,d;
+  Date().DecodeDate(&y,&m,&d);
+  oldDBFileName=dbCopyDirectoryEdit->Text+"\\"+SaleBookDM->Base_Name.SubString(0,SaleBookDM->Base_Name.Pos(".")-1)+AnsiString().sprintf("%4d%02d%02d",y,m,d)+".old";
+
+  int hDB, hOldDB;
+  hDB=FileOpen(dbFileName,fmOpenRead);
+  if(hDB < 0)
+  { MessageDlg("Ошибка открытия файла - "+dbFileName,mtError,TMsgDlgButtons() << mbOK,0);
+    RichEdit->Lines->Clear();
+    return;
+  }
+  if(FileExists(oldDBFileName)) DeleteFile(oldDBFileName);
+  hOldDB=FileCreate(oldDBFileName);
+  if(hOldDB < 0)
+  { MessageDlg("Ошибка открытия файла - "+oldDBFileName,mtError,TMsgDlgButtons() << mbOK,0);
+    RichEdit->Lines->Clear();
+    return;
+  }
+  char buf[32768];
+  int rb=0;
+  while((rb=FileRead(hDB,buf,sizeof(buf))) > 0)
+  { if(FileWrite(hOldDB,buf,rb) < 0)
+    { MessageDlg("Ошибка копирования файла - ",mtError,TMsgDlgButtons() << mbOK,0);
+      RichEdit->Lines->Clear();
+      return;
+    }
+  }
+  FileClose(hDB);
+  FileClose(hOldDB);
+
+  //  if(FileExists(oldDBFileName)) DeleteFile(oldDBFileName);
+//  RenameFile(dbFileName,oldDBFileName);
+//  if(!FileExists(oldDBFileName))
+//  { MessageDlg("Ошибка при сохранения старой базы",mtError,TMsgDlgButtons() << mbOK,0);
+//    ProgressBar->Position=0;
+//    return;
+//  }
+
+  WaitingGradient->Active=false;
+  WaitingGradient->Visible=false;
+
+  RichEdit->SelAttributes->Color=clBlue;
+  RichEdit->SelAttributes->Size=10;
+  RichEdit->Lines->Add("Старая база находится в файле - "+oldDBFileName);
+  RichEdit->Repaint();
+
+  //Восстановление базы из BuckUp фала
+  RichEdit->SelAttributes->Color=clRed;
+  RichEdit->SelAttributes->Size=10;
+  RichEdit->Lines->Add("Восстановление базы данных из BackUp файла...");
+  RichEdit->SelAttributes->Color=color;
+  RichEdit->SelAttributes->Size=size;
+  RichEdit->Repaint();
+
+  //Инициируем сервис
+  RestoreService->ServerName=server.SubString(0,server.Length()-1);
+  RestoreService->LoginPrompt=false;
+  RestoreService->Params->Clear();
+  RestoreService->Params->Add("user_name=SYSDBA");
+  RestoreService->Params->Add("password=masterkey");
+  RestoreService->Protocol=TCP;
+  RestoreService->Active=true;
+  RestoreService->Verbose = true;
+  RestoreService->PageSize=8192;
+  RestoreService->BufferSize=32000;
+  RestoreService->DatabaseName->Clear();
+  RestoreService->DatabaseName->Add(dbFullName);
+  RestoreService->BackupFile->Clear();
+  RestoreService->BackupFile->Add(backupFilenameEdit->Text);
+
+  if(CheckBox1->Checked==false)
+  { ProgressBar->Visible=true;
+    ProgressBar->Position=0;
+  }
+  try
+  { AnsiString Text;
+    RestoreService->ServiceStart();
+    while(!RestoreService->Eof)
+    { Text=RestoreService->GetNextLine();
+      if(CheckBox1->Checked)
+      { RichEdit->Lines->Add(Text);
+        RichEdit->Repaint();
+        RichEdit->SetFocus();
+        RichEdit->SelStart=RichEdit->Text.Length();
+        RichEdit->SelLength=0;
+      }
+      else
+      { ProgressBar->StepIt();
+        ProgressBar->Refresh();
+      }
+    }
+  }
+  catch(const Exception &exc)
+  { MessageDlg("Ошибка восстановления из BackUp файла\n"+exc.Message,mtError,TMsgDlgButtons() << mbOK,0);
+    RestoreService->Active = false;
+    ProgressBar->Position=0;
+    return;
+  }
+  RestoreService->Active = false;
+
+  RichEdit->SelAttributes->Color=clBlue;
+  RichEdit->SelAttributes->Size=10;
+  RichEdit->Lines->Add("База данных восстановлена!");
+  RichEdit->Repaint();
+
+  if(ProgressBar->Visible)
+  { ProgressBar->Position=0;
+    ProgressBar->Visible=false;
+  }
+
+  //Удаление BackUp файла
+  if(!zipFilenameEdit->Text.IsEmpty() && FileExists(backupFileName))
+  { RichEdit->SelAttributes->Color=clRed;
+    RichEdit->SelAttributes->Size=10;
+    RichEdit->Lines->Add("Удаление BackUp файла...");
+    RichEdit->Repaint();
+    DeleteFile(backupFileName);
+    RichEdit->SelAttributes->Color=clBlue;
+    RichEdit->SelAttributes->Size=10;
+    if(!FileExists(backupFileName))
+      RichEdit->Lines->Add("Файл удален!");
+    else
+      MessageDlg("Не могу удалить BackUp файл - "+backupFileName,mtError,TMsgDlgButtons() << mbOK,0);
+    RichEdit->Lines->Add("\n");
+    RichEdit->SelAttributes->Color=clBlue;
+    RichEdit->SelAttributes->Size=10;
+    RichEdit->Lines->Add("Операция завершена!");
+    RichEdit->Repaint();
+  }
+
+  RichEdit->SelAttributes->Color=color;
+  RichEdit->SelAttributes->Size=size;
+
+  SaleBookDM->ConnectToDataBase();
+
+  //Фиксирем действие в журнале событий ACTIONS_JOURNAL
+  str="Восстановлена базы данных из архива - "+zipFilenameEdit->Text;
+  SaleBookDM->TT->StartTransaction();
+  if(SaleBookDM->AddRecordToActionsJournal(RestoreBase,str,SaleBookDM->TT)==true)
+    SaleBookDM->TT->Commit();
+  else SaleBookDM->TT->Rollback();
+}
+//---------------------------------------------------------------------------
+

@@ -1,0 +1,254 @@
+//---------------------------------------------------------------------------
+
+#include <vcl.h>
+#pragma hdrstop
+
+#include "UnitProv.h"
+#include "Main.h"
+#include "DataModule.h"
+//---------------------------------------------------------------------------
+#pragma package(smart_init)
+#pragma link "CGAUGES"
+#pragma link "FIBDatabase"
+#pragma link "FIBDataSet"
+#pragma link "FIBQuery"
+#pragma link "JvExStdCtrls"
+#pragma link "JvMemo"
+#pragma link "pFIBDatabase"
+#pragma link "pFIBDataSet"
+#pragma link "pFIBQuery"
+#pragma link "Placemnt"
+#pragma link "SmrtPanel"
+#pragma resource "*.dfm"
+TFormProv *FormProv;
+//---------------------------------------------------------------------------
+__fastcall TFormProv::TFormProv(TComponent* Owner)
+        : TForm(Owner)
+{
+int c=0;
+TSearchRec sr;
+int CountFileAll=0;
+
+AnsiString iniFileName=MainForm->WorkDir+"SB_2009.ini";
+FormStorage1->IniFileName=iniFileName;
+FormStorage1->IniSection="ProvForm";
+LoadButton->Enabled=true;
+Memo->Clear();
+}
+//---------------------------------------------------------------------------
+void __fastcall TFormProv::CloseButtonClick(TObject *Sender)
+{
+  Close();
+  if(countzap==0) ModalResult = mrCancel; else ModalResult = mrOk;
+}
+//---------------------------------------------------------------------------
+
+void __fastcall TFormProv::LoadButtonClick(TObject *Sender)
+{
+AnsiString sql,str;
+int dob,lchet;
+
+
+  SaleBookDM->TempQuery->Close();
+  SaleBookDM->TempQuery->SQL->Clear();
+
+  sql="select MIN(EDIT_KEY) as SEK from ACCOUNTS ";
+  SaleBookDM->TempQuery->SQL->Add(sql);
+  try
+  {
+    SaleBookDM->TempQuery->ExecQuery();
+  }
+  catch(const Exception &exc)
+  {
+    MessageDlg("Ошибка - "+sql+"\n"+exc.Message,mtError,TMsgDlgButtons() << mbOK,0);
+    return;
+  }
+  if(SaleBookDM->TempQuery->FieldByName("SEK")->AsInteger==0)
+  {
+    MessageDlg("В данный момент задание открыта!!! Необходимо закрыть задание !!!",mtWarning,TMsgDlgButtons() << mbOK,0);
+    return;
+  }
+
+CloseButton->Enabled=false;
+LoadButton->Enabled=false;
+Indicator->Visible = true;
+Indicator->MinValue=0;
+
+blockDB();
+SaleBookDM->SetConstValue(SaleBookDM->OrganizationID,"LOCK_WORK_DATE","2");
+str=" Все задания текущего месяца заблокированы !!! ";
+Memo->Lines->Add(str);
+str=" Все пользователи ИС заблокированы !!! ";
+Memo->Lines->Add(str);
+
+int nsk=0;
+int ns=0;
+int pr1=0;
+int pr2=0;
+
+str=" Начало этапа проверки БД на ошибки по полю KASSA ";
+Memo->Lines->Add(str);
+str="";
+Memo->Lines->Add(str);
+
+  DB1->Close();
+  DB1->SQLs->SelectSQL->Clear();
+  sql="select * from SGB";
+  sql+=" where PRICH='н/д'";
+  sql+=" and LCHET1 NOT IN ('Прошврем','раздел 1')";
+
+  DB1->SQLs->SelectSQL->Add(sql);
+  try
+  {
+    DB1->Open();
+  }
+  catch(const Exception &exc)
+  {
+    MessageDlg("Ошибка - "+sql+"\n"+exc.Message,mtError,TMsgDlgButtons() << mbOK,0);
+  }
+  DB1->Last();
+  Indicator->MinValue=0;
+  Indicator->MaxValue=DB1->RecordCount;
+
+  DB1->First();
+  nsk=0;
+  ns=0;
+  while(!DB1->Eof)
+  {
+      lchet=DB1->FieldByName("LCHET")->AsInteger;
+      pr1=0;
+      pr2=0;
+
+      sql="select count (distinct g.lchet) as CR  from SGB g where LCHET = "+IntToStr(lchet);
+      sql+=" and PRICH=''";
+      sql+=" and LCHET1 NOT IN ('Прошврем','раздел 1')";
+      TempQ->Close();
+      TempQ->SQL->Clear();
+      TempQ->SQL->Add(sql);
+      try
+      {
+      TempQ->ExecQuery();
+      }
+      catch(const Exception &exc)
+      {
+      MessageDlg("Ошибка - "+sql+"\n"+exc.Message,mtError,TMsgDlgButtons() << mbOK,0);
+      return;
+      }
+      if (TempQ->FieldByName("CR")->AsInteger >=0 ) pr1=TempQ->FieldByName("CR")->AsInteger;
+
+      sql="select count (distinct g.lchet) as CR  from SGB g where LCHET = "+IntToStr(lchet);
+      sql+=" and PRICH<>'н/д'";
+      sql+=" and LCHET1 NOT IN ('Прошврем','раздел 1')";
+      TempQ->Close();
+      TempQ->SQL->Clear();
+      TempQ->SQL->Add(sql);
+      try
+      {
+      TempQ->ExecQuery();
+      }
+      catch(const Exception &exc)
+      {
+      MessageDlg("Ошибка - "+sql+"\n"+exc.Message,mtError,TMsgDlgButtons() << mbOK,0);
+      return;
+      }
+      if (TempQ->FieldByName("CR")->AsInteger >=0 ) pr2=TempQ->FieldByName("CR")->AsInteger;
+
+      str="";
+      TQ->Transaction->StartTransaction();
+      TQ->Close();
+      TQ->SQL->Clear();
+      sql="update SGB set";
+      if ( pr1+pr2 >0 ) sql+=" KASSA=1"; else sql+=" KASSA=0";
+      sql+=" where LCHET="+IntToStr(lchet);
+      sql+=" and PRICH='н/д'";
+      TQ->SQL->Add(sql);
+      try
+      {
+        TQ->ExecQuery();
+        nsk++;
+      }
+      catch (Exception &exc)
+      {
+        MessageDlg("ошибка - "+sql+"\n"+exc.Message,mtError,TMsgDlgButtons() << mbOK,0);
+        TQ->Transaction->Rollback();
+      }
+      TQ->Transaction->Commit();
+
+      DB1->Next();
+      ns++;
+      Indicator->Progress = ns;
+    }
+
+DB1->Close();
+str="Обработано записей по статусу KASSA:" + IntToStr(nsk);
+Memo->Lines->Add(str);
+str="";
+Memo->Lines->Add(str);
+str=" Конец проверки данных!!! ";
+Memo->Lines->Add(str);
+deblockDB();
+SaleBookDM->SetConstValue(SaleBookDM->OrganizationID,"LOCK_WORK_DATE","0");
+str=" Все задания текущего месяца разблокированы !!! ";
+Memo->Lines->Add(str);
+str=" Все пользователи ИС разблокированы !!! ";
+Memo->Lines->Add(str);
+countzap=nsk;
+
+  Indicator->Visible = false;
+  CloseButton->Enabled=true;
+  LoadButton->Enabled=false;
+}
+//---------------------------------------------------------------------------
+void __fastcall TFormProv::blockDB(void)
+{
+AnsiString sql;
+unsigned short y,m,d;
+TDateTime dt=Date();
+TDateTime lockDate;
+unsigned short yl,ml,dl;
+
+  lockDate=SaleBookDM->GetConstValue(SaleBookDM->OrganizationID,"LOCK_EDIT_DATE");
+  lockDate.DecodeDate(&yl,&ml,&dl);
+  dt.DecodeDate(&y,&m,&d);
+  if (ml != m)
+  {
+   if (m==12)
+   {
+   m=1;
+   y++;
+   }else
+   {
+   m=ml;
+   y=yl;
+   }
+  }
+
+}
+
+//---------------------------------------------------------------------------
+void __fastcall TFormProv::deblockDB(void)
+{
+AnsiString sql;
+unsigned short y,m,d;
+TDateTime dt=Date();
+TDateTime lockDate;
+unsigned short yl,ml,dl;
+
+  lockDate=SaleBookDM->GetConstValue(SaleBookDM->OrganizationID,"LOCK_EDIT_DATE");
+  lockDate.DecodeDate(&yl,&ml,&dl);
+  dt.DecodeDate(&y,&m,&d);
+  if (ml != m)
+  {
+   if (m==12)
+   {
+   m=1;
+   y++;
+   }else
+   {
+   m=ml;
+   y=yl;
+   }
+  }
+
+}
+
